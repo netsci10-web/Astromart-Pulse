@@ -5,7 +5,9 @@ import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  const isGitHubPages = process.env.GITHUB_PAGES === 'true';
   return {
+    base: isGitHubPages ? './' : '/',
     plugins: [
       react(),
       tailwindcss(),
@@ -13,31 +15,31 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
-          id: '/',
+          id: './',
           name: 'Astromart Pulse — 아스트로마트 장터 모니터',
           short_name: 'AstroPulse',
           description: '아스트로마트 중고장터 실시간 새 글 알림, 백그라운드 푸시 및 로그인 유지 웹뷰 앱',
           theme_color: '#0B0F19',
           background_color: '#0B0F19',
           display: 'standalone',
-          start_url: '/',
-          scope: '/',
+          start_url: './',
+          scope: './',
           orientation: 'portrait-primary',
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: 'pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: 'pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: 'pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',

@@ -21,6 +21,7 @@ import {
   ExternalLink,
   Pause,
   Play,
+  Github,
 } from 'lucide-react';
 import {
   MarketPost,
@@ -36,9 +37,17 @@ import {
   playNotificationChime,
   updateAppBadge,
 } from './utils/notifications';
+import {
+  loadClientState,
+  saveClientState,
+  pollClientFallback,
+  simulatePostClientFallback,
+  deleteSimulatedClientFallback,
+} from './utils/clientFallbackEngine';
 import { WebViewPane } from './components/WebViewPane';
 import { AuthSessionModal } from './components/AuthSessionModal';
 import { PWAInstallModal } from './components/PWAInstallModal';
+import { GitHubDeployModal } from './components/GitHubDeployModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
 
 const INTERVAL_OPTIONS: { value: PollingIntervalSec; label: string }[] = [
@@ -94,6 +103,8 @@ export default function App() {
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
+  const [isGitHubModalOpen, setIsGitHubModalOpen] = useState<boolean>(false);
+  const [isStaticMode, setIsStaticMode] = useState<boolean>(false);
   const [liveToast, setLiveToast] = useState<NotificationLogItem | null>(null);
   const [selectedTestUids, setSelectedTestUids] = useState<string[]>([]);
   const [selectedNotifIds, setSelectedNotifIds] = useState<string[]>([]);
@@ -129,13 +140,17 @@ export default function App() {
     }
   }, []);
 
-  // Fetch initial state from backend
+  // Fetch initial state from backend (with automatic GitHub Pages static fallback)
   const fetchMarketData = useCallback(async (force = false) => {
     if (force) setIsRefreshing(true);
     try {
       const res = await fetch(`/api/market${force ? '?force=true' : ''}`);
-      if (!res.ok) throw new Error('장터 데이터를 불러오지 못했습니다.');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('STATIC_FALLBACK_REQUIRED');
+      }
       const data: MarketStateResponse = await res.json();
+      setIsStaticMode(false);
       setPosts(data.posts || []);
       setNotifications(data.notifications || []);
       setIntervalSec(data.intervalSec || 60);
@@ -149,13 +164,38 @@ export default function App() {
       if (data.session) {
         setSession(data.session);
       }
-    } catch (err: unknown) {
-      setPollError(err instanceof Error ? err.message : '연결 오류');
+    } catch {
+      // Fallback to Client-Side Polling Engine (GitHub Pages / Static Hosting)
+      try {
+        setIsStaticMode(true);
+        const { response: data, newNotifications } = await pollClientFallback();
+        setPosts(data.posts || []);
+        setNotifications(data.notifications || []);
+        setIntervalSec(data.intervalSec || 60);
+        setMonitoringEnabled(data.monitoringEnabled ?? true);
+        setKeywords(data.keywords || []);
+        setNotifyAllNewPosts(data.notifyAllNewPosts ?? true);
+        setCategoryFilter(data.categoryFilter || '전체');
+        setLastCheckedAt(data.lastCheckedAt);
+        setNextCheckAt(data.nextCheckAt);
+        setPollError(null);
+        if (newNotifications.length > 0) {
+          const latest = newNotifications[0];
+          setLiveToast(latest);
+          dispatchBackgroundPushNotification(latest, {
+            soundEnabled,
+            vibrateEnabled,
+            onClickUrl: (targetUrl) => openPostInWebView(targetUrl, latest.uid),
+          });
+        }
+      } catch (fallbackErr: unknown) {
+        setPollError(fallbackErr instanceof Error ? fallbackErr.message : '연결 오류');
+      }
     } finally {
       setIsRefreshing(false);
       setIsLoadingInitial(false);
     }
-  }, []);
+  }, [soundEnabled, vibrateEnabled, openPostInWebView]);
 
   useEffect(() => {
     fetchMarketData(false);
@@ -163,6 +203,7 @@ export default function App() {
 
   // Connect to Server-Sent Events (/api/events) for real-time background poll updates
   useEffect(() => {
+    if (isStaticMode) return;
     const es = new EventSource('/api/events');
 
     es.addEventListener('poll_update', (e: MessageEvent) => {
@@ -214,7 +255,7 @@ export default function App() {
     return () => {
       es.close();
     };
-  }, [soundEnabled, vibrateEnabled, openPostInWebView]);
+  }, [isStaticMode, soundEnabled, vibrateEnabled, openPostInWebView]);
 
   // Countdown Timer (1s tick) + Client-side fallback poll if background tab woke up past nextCheckAt
   useEffect(() => {
@@ -227,7 +268,9 @@ export default function App() {
       const diffMs = new Date(nextCheckAt).getTime() - Date.now();
       const secs = Math.max(0, Math.ceil(diffMs / 1000));
       setRemainingSec(secs);
-      if (diffMs < -3000 && !isRefreshing) {
+      if (diffMs <= 0 && !isRefreshing && isStaticMode) {
+        fetchMarketData(true);
+      } else if (diffMs < -3000 && !isRefreshing) {
         fetchMarketData(true);
       }
     };
@@ -235,7 +278,7 @@ export default function App() {
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [monitoringEnabled, nextCheckAt, intervalSec, isRefreshing, fetchMarketData]);
+  }, [monitoringEnabled, nextCheckAt, intervalSec, isRefreshing, isStaticMode, fetchMarketData]);
 
   // Update Server Settings helper
   const updateServerSettings = async (patch: Partial<{
@@ -245,11 +288,27 @@ export default function App() {
     notifyAllNewPosts: boolean;
     categoryFilter: '전체' | '판매' | '구입';
   }>) => {
+    const nextInterval = patch.intervalSec ?? intervalSec;
+    const nextEnabled = patch.monitoringEnabled ?? monitoringEnabled;
     if (patch.intervalSec) setIntervalSec(patch.intervalSec);
     if (typeof patch.monitoringEnabled === 'boolean') setMonitoringEnabled(patch.monitoringEnabled);
     if (patch.keywords) setKeywords(patch.keywords);
     if (typeof patch.notifyAllNewPosts === 'boolean') setNotifyAllNewPosts(patch.notifyAllNewPosts);
     if (patch.categoryFilter) setCategoryFilter(patch.categoryFilter);
+
+    if (isStaticMode) {
+      const st = loadClientState();
+      if (patch.intervalSec) st.intervalSec = patch.intervalSec;
+      if (typeof patch.monitoringEnabled === 'boolean') st.monitoringEnabled = patch.monitoringEnabled;
+      if (patch.keywords) st.keywords = patch.keywords;
+      if (typeof patch.notifyAllNewPosts === 'boolean') st.notifyAllNewPosts = patch.notifyAllNewPosts;
+      if (patch.categoryFilter) st.categoryFilter = patch.categoryFilter;
+      saveClientState(st);
+      setNextCheckAt(
+        nextEnabled ? new Date(Date.now() + nextInterval * 1000).toISOString() : null
+      );
+      return;
+    }
 
     try {
       const res = await fetch('/api/settings', {
@@ -270,6 +329,18 @@ export default function App() {
     if (pushPermission === 'default') {
       const perm = await requestPushNotificationPermission();
       setPushPermission(perm);
+    }
+    if (isStaticMode) {
+      const sim = simulatePostClientFallback();
+      setPosts(sim.posts);
+      setNotifications(sim.notifications);
+      setLiveToast(sim.notification);
+      dispatchBackgroundPushNotification(sim.notification, {
+        soundEnabled: true,
+        vibrateEnabled: true,
+        onClickUrl: (url) => openPostInWebView(url, sim.notification.uid),
+      });
+      return;
     }
     try {
       const res = await fetch('/api/simulate-post', {
@@ -329,6 +400,14 @@ export default function App() {
     notifIds?: string[];
     deleteAll?: boolean;
   }) => {
+    if (isStaticMode) {
+      const updated = deleteSimulatedClientFallback(options);
+      setPosts(updated.posts);
+      setNotifications(updated.notifications);
+      if (options.deleteAll || options.uids) setSelectedTestUids([]);
+      if (options.deleteAll || options.notifIds) setSelectedNotifIds([]);
+      return;
+    }
     try {
       const res = await fetch('/api/simulate-post/delete', {
         method: 'POST',
@@ -712,6 +791,15 @@ export default function App() {
                   <span>Android/iOS 설치</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => setIsGitHubModalOpen(true)}
+                className="min-h-[40px] px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800/90 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Github className="w-3.5 h-3.5 text-sky-400" />
+                <span>GitHub 배포</span>
+              </button>
             </div>
           </div>
         </section>
@@ -1361,6 +1449,7 @@ export default function App() {
               onNavigateUrl={(url) => setWebViewUrl(url)}
               session={session}
               onOpenAuthModal={() => setIsAuthModalOpen(true)}
+              isStaticMode={isStaticMode}
             />
           </div>
         </div>
@@ -1440,6 +1529,18 @@ export default function App() {
       <PWAInstallModal
         isOpen={isInstallModalOpen}
         onClose={() => setIsInstallModalOpen(false)}
+      />
+
+      <GitHubDeployModal
+        isOpen={isGitHubModalOpen}
+        onClose={() => setIsGitHubModalOpen(false)}
+        isStaticMode={isStaticMode}
+        keywords={keywords}
+        intervalSec={intervalSec}
+        onImportSettings={(imported) => {
+          updateServerSettings(imported);
+          setIsGitHubModalOpen(false);
+        }}
       />
     </div>
   );

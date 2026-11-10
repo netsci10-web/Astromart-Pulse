@@ -11,12 +11,14 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { SessionStatus } from '../types';
+import { fetchHtmlViaCorsProxy } from '../utils/clientFallbackEngine';
 
 interface WebViewPaneProps {
   currentUrl: string;
   onNavigateUrl: (url: string) => void;
   session: SessionStatus;
   onOpenAuthModal: () => void;
+  isStaticMode?: boolean;
 }
 
 export const WebViewPane: React.FC<WebViewPaneProps> = ({
@@ -24,12 +26,14 @@ export const WebViewPane: React.FC<WebViewPaneProps> = ({
   onNavigateUrl,
   session,
   onOpenAuthModal,
+  isStaticMode = false,
 }) => {
   const [urlInput, setUrlInput] = useState(currentUrl);
   const [isLoading, setIsLoading] = useState(true);
   const [viewportMode, setViewportMode] = useState<'responsive' | 'mobile'>('responsive');
   const [historyStack, setHistoryStack] = useState<string[]>([currentUrl]);
   const [reloadKey, setReloadKey] = useState(0);
+  const [staticSrcDoc, setStaticSrcDoc] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
@@ -42,18 +46,86 @@ export const WebViewPane: React.FC<WebViewPaneProps> = ({
   }, [currentUrl]);
 
   useEffect(() => {
+    if (!isStaticMode) {
+      setStaticSrcDoc(null);
+      return;
+    }
+    let cancelled = false;
+    setIsLoading(true);
+    fetchHtmlViaCorsProxy(currentUrl)
+      .then((rawHtml) => {
+        if (cancelled) return;
+        const isPermissionDeniedAlert =
+          rawHtml.includes("alert('권한이 없습니다.')") ||
+          rawHtml.includes('alert("권한이 없습니다.")');
+        if (isPermissionDeniedAlert) {
+          setStaticSrcDoc(`<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"/><style>
+  body { margin:0; padding:24px; background:#0B0F19; color:#F8FAFC; font-family:-apple-system,BlinkMacSystemFont,sans-serif; }
+  .card { max-width:560px; margin:0 auto; background:#111827; border:1px solid #1E293B; border-radius:16px; padding:24px; }
+  .btn { display:inline-block; margin-top:16px; margin-right:8px; padding:10px 16px; border-radius:10px; background:#38BDF8; color:#0B0F19; font-weight:600; font-size:13px; text-decoration:none; }
+</style></head><body>
+  <div class="card">
+    <h2 style="font-size:17px;margin-top:0;">아스트로마트 회원 전용 게시글 안내</h2>
+    <p style="font-size:13px;color:#CBD5E1;line-height:1.6;">
+      현재 GitHub Pages(정적 호스팅) 모드로 실행 중입니다. 아스트로마트 본문 열람은 정식 로그인 쿠키가 필요하므로 아래 버튼으로 원본 페이지에서 열람하거나 풀스택 서버 모드로 배포하여 인앱 쿠키 프록시를 이용하세요.
+    </p>
+    <a class="btn" href="${currentUrl}" target="_blank" rel="noopener noreferrer">아스트로마트 원본 창에서 바로 열기</a>
+  </div>
+</body></html>`);
+        } else {
+          const enhanced = rawHtml.replace(
+            /<head([^>]*)>/i,
+            `<head$1><base href="https://www.astromart.co.kr/" /><script>
+              document.addEventListener('click', function(e) {
+                var a = e.target && e.target.closest ? e.target.closest('a') : null;
+                if (!a) return;
+                var href = a.getAttribute('href');
+                if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+                try {
+                  var resolved = new URL(href, ${JSON.stringify(currentUrl)});
+                  if (resolved.hostname.endsWith('astromart.co.kr')) {
+                    e.preventDefault();
+                    window.parent.postMessage({ type: 'ASTROMART_STATIC_GOTO', url: resolved.toString() }, '*');
+                  }
+                } catch (err) {}
+              }, true);
+            </script>`
+          );
+          setStaticSrcDoc(enhanced);
+        }
+        setIsLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setStaticSrcDoc(`<!doctype html>
+<html lang="ko"><body style="background:#0B0F19;color:#F8FAFC;font-family:sans-serif;padding:24px;">
+  <h3>외부 페이지 연결 안내</h3>
+  <p style="color:#94A3B8;font-size:13px;">브라우저 보안 정책으로 인해 새 탭에서 아스트로마트 원본 페이지를 열 수 있습니다.</p>
+  <a href="${currentUrl}" target="_blank" rel="noopener noreferrer" style="color:#38BDF8;font-weight:bold;">새 탭에서 ${currentUrl} 열기</a>
+</body></html>`);
+        setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUrl, reloadKey, isStaticMode]);
+
+  useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (!event.data || typeof event.data !== 'object') return;
       if (event.data.type === 'ASTROMART_WEBVIEW_NAV' && event.data.url) {
         setUrlInput(event.data.url);
         setIsLoading(false);
+      } else if (event.data.type === 'ASTROMART_STATIC_GOTO' && event.data.url) {
+        onNavigateUrl(event.data.url);
       } else if (event.data.type === 'OPEN_AUTH_MODAL') {
         onOpenAuthModal();
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onOpenAuthModal]);
+  }, [onNavigateUrl, onOpenAuthModal]);
 
   const proxySrc = `/api/webview?url=${encodeURIComponent(currentUrl)}&_r=${reloadKey}`;
 
@@ -216,7 +288,7 @@ export const WebViewPane: React.FC<WebViewPaneProps> = ({
           </button>
         </div>
         <span className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">
-          세션 프록시 연동됨
+          {isStaticMode ? 'GitHub Pages 웹뷰' : '세션 프록시 연동됨'}
         </span>
       </div>
 
@@ -234,13 +306,22 @@ export const WebViewPane: React.FC<WebViewPaneProps> = ({
               : 'w-full'
           }`}
         >
-          <iframe
-            ref={iframeRef}
-            src={proxySrc}
-            title="Astromart Embedded WebView"
-            onLoad={() => setIsLoading(false)}
-            className="w-full h-full border-0 bg-white"
-          />
+          {isStaticMode ? (
+            <iframe
+              ref={iframeRef}
+              srcDoc={staticSrcDoc || ''}
+              title="Astromart Static WebView"
+              className="w-full h-full border-0 bg-white"
+            />
+          ) : (
+            <iframe
+              ref={iframeRef}
+              src={proxySrc}
+              title="Astromart Embedded WebView"
+              onLoad={() => setIsLoading(false)}
+              className="w-full h-full border-0 bg-white"
+            />
+          )}
         </div>
       </div>
     </div>
