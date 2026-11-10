@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0B0F19"/>
+  <circle cx="256" cy="256" r="168" stroke="#1E293B" stroke-width="4" stroke-dasharray="10 10"/>
+  <circle cx="256" cy="256" r="120" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="3"/>
+  <!-- Telescope / Observatory Dome + Radar Pulse Motif -->
+  <path d="M164 336L228 208L304 284L164 336Z" fill="#0284C7" stroke="#38BDF8" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M216 196L328 140L372 184L268 248L216 196Z" fill="#38BDF8" stroke="#E0F2FE" stroke-width="10" stroke-linejoin="round"/>
+  <circle cx="350" cy="162" r="24" fill="#F59E0B"/>
+  <path d="M236 298L204 384M256 298L288 384" stroke="#94A3B8" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="380" cy="132" r="14" fill="#38BDF8"/>
+</svg>

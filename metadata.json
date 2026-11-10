@@ -1,0 +1,6 @@
+{
+  "name": "Astromart Pulse",
+  "description": "아스트로마트 중고장터(astromart.co.kr/market) 실시간 새 게시물 모니터링, 백그라운드 푸시 알림 및 로그인 세션 유지 웹뷰 크로스 플랫폼 앱",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

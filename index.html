@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function () {
+        var NativeWebSocket = window.WebSocket;
+        if (!NativeWebSocket) return;
+        function PatchedWebSocket(url, protocols) {
+          var isViteHmr =
+            protocols === 'vite-hmr' ||
+            protocols === 'vite-ping' ||
+            (Array.isArray(protocols) &&
+              (protocols.indexOf('vite-hmr') !== -1 || protocols.indexOf('vite-ping') !== -1));
+          if (isViteHmr) {
+            var target = new EventTarget();
+            target.readyState = 1;
+            target.protocol = typeof protocols === 'string' ? protocols : 'vite-hmr';
+            target.url = String(url || '');
+            target.send = function () {};
+            target.close = function () {
+              target.readyState = 3;
+            };
+            setTimeout(function () {
+              var openEvt = new Event('open');
+              target.dispatchEvent(openEvt);
+              if (typeof target.onopen === 'function') target.onopen(openEvt);
+              var msgEvt = new MessageEvent('message', {
+                data: JSON.stringify({ type: 'connected' }),
+              });
+              target.dispatchEvent(msgEvt);
+              if (typeof target.onmessage === 'function') target.onmessage(msgEvt);
+            }, 10);
+            return target;
+          }
+          return protocols !== undefined
+            ? new NativeWebSocket(url, protocols)
+            : new NativeWebSocket(url);
+        }
+        PatchedWebSocket.prototype = NativeWebSocket.prototype;
+        PatchedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+        PatchedWebSocket.OPEN = NativeWebSocket.OPEN;
+        PatchedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+        PatchedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+        window.WebSocket = PatchedWebSocket;
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Astromart Pulse — 아스트로마트 장터 실시간 알림 & 웹뷰</title>
+    <meta name="description" content="아스트로마트 중고장터(astromart.co.kr/market) 실시간 새 게시물 모니터링, 백그라운드 푸시 알림 및 로그인 세션 유지 웹뷰 크로스 플랫폼 앱" />
+    <meta property="og:title" content="Astromart Pulse — 아스트로마트 장터 실시간 알림 & 웹뷰" />
+    <meta property="og:description" content="아스트로마트 중고장터(astromart.co.kr/market) 실시간 새 게시물 모니터링, 백그라운드 푸시 알림 및 로그인 세션 유지 웹뷰 크로스 플랫폼 앱" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0B0F19" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="AstroPulse" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-[#F8FAFC] dark:bg-[#0B0F19] text-slate-900 dark:text-slate-100 antialiased selection:bg-indigo-500/30">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
