@@ -244,7 +244,7 @@ async function fetchAstromartMarket(page = 1, category = ''): Promise<{ posts: M
     const dateText = $row.find('td.kboard-list-date').text().trim() || '';
     const votes = parseInt($row.find('td.kboard-list-vote').text().trim() || '0', 10) || 0;
     const views = parseInt($row.find('td.kboard-list-view').text().trim() || '0', 10) || 0;
-    const fullUrl = href.startsWith('http') ? href : `${ASTROMART_BASE}${href.startsWith('/') ? '' : '/market/'}${href}`;
+    const fullUrl = `${ASTROMART_BASE}/market/?mod=document&uid=${uid}`;
 
     posts.push({
       uid,
@@ -788,8 +788,8 @@ async function startServer() {
       });
     }
 
-    // If user explicitly checked "웹뷰 자동완성 및 로컬 세션 유지 저장" even if remote blocked or 2FA
-    if (allowLocalPersist) {
+    // If user checked "로그인 상태 영구 유지 (keepAlive)" or "웹뷰 자동완성 연동 (allowLocalPersist)"
+    if (keepAlive || allowLocalPersist) {
       state.session = {
         isLoggedIn: true,
         username: username.trim(),

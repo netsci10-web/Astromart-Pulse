@@ -59,10 +59,22 @@ export const WebViewPane: React.FC<WebViewPaneProps> = ({
     return () => window.removeEventListener('message', handleMessage);
   }, [onNavigateUrl, onOpenAuthModal]);
 
-  // In static mode (GitHub Pages), load currentUrl directly in the iframe since astromart.co.kr does not send X-Frame-Options
+  const normalizeAstromartUrl = (raw: string): string => {
+    if (!raw || raw.includes('/wp-json/')) {
+      const m = raw?.match(/uid=(\d+)/);
+      return m
+        ? `https://www.astromart.co.kr/market/?mod=document&uid=${m[1]}`
+        : 'https://www.astromart.co.kr/market/';
+    }
+    return raw;
+  };
+
+  const safeCurrentUrl = normalizeAstromartUrl(currentUrl);
+
+  // In static mode (GitHub Pages), load safeCurrentUrl directly in the iframe
   const iframeSrc = isStaticMode
-    ? `${currentUrl}${currentUrl.includes('?') ? '&' : '?'}_r=${reloadKey}`
-    : `/api/webview?url=${encodeURIComponent(currentUrl)}&_r=${reloadKey}`;
+    ? `${safeCurrentUrl}${safeCurrentUrl.includes('?') ? '&' : '?'}_r=${reloadKey}`
+    : `/api/webview?url=${encodeURIComponent(safeCurrentUrl)}&_r=${reloadKey}`;
 
   const handleGoBack = () => {
     if (historyStack.length > 1) {
@@ -244,6 +256,7 @@ export const WebViewPane: React.FC<WebViewPaneProps> = ({
           <iframe
             ref={iframeRef}
             src={iframeSrc}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
             title="Astromart Embedded WebView"
             onLoad={() => setIsLoading(false)}
             className="w-full h-full border-0 bg-white"

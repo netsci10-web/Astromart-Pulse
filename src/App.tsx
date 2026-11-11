@@ -48,6 +48,7 @@ import { WebViewPane } from './components/WebViewPane';
 import { AuthSessionModal } from './components/AuthSessionModal';
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { GitHubDeployModal } from './components/GitHubDeployModal';
+import { PostDetailModal } from './components/PostDetailModal';
 import { usePWAInstall } from './hooks/usePWAInstall';
 
 const INTERVAL_OPTIONS: { value: PollingIntervalSec; label: string }[] = [
@@ -89,16 +90,58 @@ export default function App() {
   const [isLoadingInitial, setIsLoadingInitial] = useState<boolean>(() => !isGitHubHost);
   const [pollError, setPollError] = useState<string | null>(null);
 
-  const [session, setSession] = useState<SessionStatus>({
-    isLoggedIn: false,
-    username: '',
-    lastVerifiedAt: null,
-    keepAlive: true,
-    loginMode: 'none',
+  const [session, setSession] = useState<SessionStatus>(() => {
+    try {
+      const saved = localStorage.getItem('astromart_saved_session');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.isLoggedIn === 'boolean') {
+          return parsed;
+        }
+      }
+      const savedUser = localStorage.getItem('astromart_saved_user');
+      if (savedUser) {
+        return {
+          isLoggedIn: true,
+          username: savedUser,
+          lastVerifiedAt: new Date().toISOString(),
+          keepAlive: true,
+          loginMode: 'credentials',
+        };
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return {
+      isLoggedIn: false,
+      username: '',
+      lastVerifiedAt: null,
+      keepAlive: true,
+      loginMode: 'none',
+    };
   });
+
+  // Client-side Session Keep-Alive Heartbeat (5 minutes)
+  useEffect(() => {
+    if (!session.isLoggedIn || !session.keepAlive) return;
+    const timer = setInterval(() => {
+      setSession((prev) => {
+        if (!prev.isLoggedIn) return prev;
+        const next = { ...prev, lastVerifiedAt: new Date().toISOString() };
+        try {
+          localStorage.setItem('astromart_saved_session', JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    }, 5 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [session.isLoggedIn, session.keepAlive]);
 
   const [webViewUrl, setWebViewUrl] = useState<string>('https://www.astromart.co.kr/market/');
   const [selectedPostUid, setSelectedPostUid] = useState<string | null>(null);
+  const [popupPost, setPopupPost] = useState<MarketPost | null>(null);
 
   const [pushPermission, setPushPermission] = useState<NotificationPermission | 'unsupported'>(() =>
     getNotificationPermissionState()
@@ -144,9 +187,50 @@ export default function App() {
     updateAppBadge(unreadCount);
   }, [unreadCount]);
 
-  const openPostInWebView = useCallback((url: string, uid?: string) => {
-    setWebViewUrl(url);
+  const sendPostToRightWebView = useCallback((url: string, uid?: string) => {
+    const cleanUrl = uid
+      ? `https://www.astromart.co.kr/market/?mod=document&uid=${uid}`
+      : url;
+    setWebViewUrl(cleanUrl);
     if (uid) setSelectedPostUid(uid);
+    if (window.innerWidth < 1024) {
+      setActiveTab('webview');
+    }
+  }, []);
+
+  const postsRef = React.useRef<MarketPost[]>(posts);
+  postsRef.current = posts;
+  const notifsRef = React.useRef<NotificationLogItem[]>(notifications);
+  notifsRef.current = notifications;
+
+  const openPostInWebView = useCallback((url: string, uid?: string) => {
+    const extractedUid = uid || url.match(/uid=(\d+)/)?.[1];
+    if (extractedUid) {
+      setSelectedPostUid(extractedUid);
+      const cleanUrl = `https://www.astromart.co.kr/market/?mod=document&uid=${extractedUid}`;
+      const matched = postsRef.current.find((p) => p.uid === extractedUid);
+      if (matched) {
+        setPopupPost({ ...matched, url: cleanUrl });
+        return;
+      }
+      const matchedNotif = notifsRef.current.find((n) => n.uid === extractedUid);
+      setPopupPost({
+        uid: extractedUid,
+        category: matchedNotif?.category || '판매',
+        title: matchedNotif?.title || `아스트로마트 장터 게시물 #${extractedUid}`,
+        commentCount: 0,
+        author: matchedNotif?.author || '회원',
+        dateText: '방금 전',
+        votes: 0,
+        views: 1,
+        url: cleanUrl,
+        isNotice: false,
+        discoveredAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    setWebViewUrl(url);
     if (window.innerWidth < 1024) {
       setActiveTab('webview');
     }
@@ -176,8 +260,13 @@ export default function App() {
       setLastCheckedAt(data.lastCheckedAt);
       setNextCheckAt(data.nextCheckAt);
       setPollError(data.lastPollError);
-      if (data.session) {
+      if (data.session && data.session.isLoggedIn) {
         setSession(data.session);
+        try {
+          localStorage.setItem('astromart_saved_session', JSON.stringify(data.session));
+        } catch {
+          // ignore
+        }
       }
     } catch {
       // Fallback to Client-Side Polling Engine (GitHub Pages / Static Hosting)
@@ -482,22 +571,52 @@ export default function App() {
   };
 
   const handleMarkAllRead = async () => {
-    await fetch('/api/notifications/read', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clearAll: true }),
-    });
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    if (isStaticMode) {
+      const st = loadClientState();
+      st.notifications = st.notifications.map((n) => ({ ...n, read: true }));
+      saveClientState(st);
+      return;
+    }
+    try {
+      await fetch('/api/notifications/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clearAll: true }),
+      });
+    } catch {
+      const st = loadClientState();
+      st.notifications = st.notifications.map((n) => ({ ...n, read: true }));
+      saveClientState(st);
+    }
   };
 
   const handleClearNotifications = async () => {
-    const res = await fetch('/api/notifications', { method: 'DELETE' });
-    const data = await res.json();
-    if (data.ok) {
+    if (isStaticMode) {
+      const st = loadClientState();
+      st.notifications = [];
+      st.simulatedPosts = [];
+      st.knownPosts = st.knownPosts.filter((p) => !p.isSimulated);
+      saveClientState(st);
       setNotifications([]);
       setSelectedNotifIds([]);
       setSelectedTestUids([]);
-      if (Array.isArray(data.posts)) setPosts(data.posts);
+      setPosts(st.knownPosts);
+      return;
+    }
+    try {
+      const res = await fetch('/api/notifications', { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) {
+        setNotifications([]);
+        setSelectedNotifIds([]);
+        setSelectedTestUids([]);
+        if (Array.isArray(data.posts)) setPosts(data.posts);
+      }
+    } catch {
+      setNotifications([]);
+      setSelectedNotifIds([]);
+      setSelectedTestUids([]);
     }
   };
 
@@ -1068,16 +1187,17 @@ export default function App() {
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             )}
-                            <a
-                              href={post.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              title="새 탭에서 원본 글 열기"
-                              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openPostInWebView(post.url, post.uid);
+                              }}
+                              title="팝업창으로 게시물 상세 열기"
+                              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-sky-500 hover:bg-sky-500/10 transition-colors"
                             >
                               <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
+                            </button>
                           </div>
                         </div>
                       );
@@ -1532,13 +1652,26 @@ export default function App() {
       </nav>
 
       {/* Modals */}
+      <PostDetailModal
+        post={popupPost}
+        isOpen={Boolean(popupPost)}
+        onClose={() => setPopupPost(null)}
+        isStaticMode={isStaticMode}
+        session={session}
+        onOpenAuthModal={() => {
+          setPopupPost(null);
+          setIsAuthModalOpen(true);
+        }}
+        onSendToRightWebView={(url, uid) => sendPostToRightWebView(url, uid)}
+      />
+
       <AuthSessionModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         session={session}
         onSessionUpdated={(updated) => setSession(updated)}
         onOpenWebViewLogin={() => {
-          openPostInWebView('https://www.astromart.co.kr/login/');
+          sendPostToRightWebView('https://www.astromart.co.kr/login/');
         }}
       />
 

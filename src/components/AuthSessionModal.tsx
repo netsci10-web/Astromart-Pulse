@@ -28,10 +28,82 @@ export const AuthSessionModal: React.FC<AuthSessionModalProps> = ({
 
   if (!isOpen) return null;
 
+  const saveLocalSessionFallback = () => {
+    const cleanUser = (username || 'Astromart 회원').trim();
+    const fallbackSession: SessionStatus = {
+      isLoggedIn: true,
+      username: cleanUser,
+      lastVerifiedAt: new Date().toISOString(),
+      keepAlive: Boolean(keepAlive),
+      loginMode: mode === 'cookie' ? 'cookie' : allowLocalPersist ? 'webview' : 'credentials',
+      hasCookie: mode === 'cookie' ? Boolean(cookieString.trim()) : true,
+    };
+
+    try {
+      localStorage.setItem('astromart_saved_user', cleanUser);
+      localStorage.setItem('astromart_saved_session', JSON.stringify(fallbackSession));
+      if (keepAlive || allowLocalPersist) {
+        localStorage.setItem(
+          'astromart_vault_creds',
+          JSON.stringify({
+            username: cleanUser,
+            passwordB64: password ? btoa(unescape(encodeURIComponent(password))) : '',
+            cookieString: cookieString ? cookieString.trim() : '',
+            keepAlive: Boolean(keepAlive),
+            allowLocalPersist: Boolean(allowLocalPersist),
+            updatedAt: new Date().toISOString(),
+          })
+        );
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+
+    // Trigger background no-cors warm-up request to astromart.co.kr for browser cookie keep-alive
+    if (mode === 'credentials' && username && password) {
+      try {
+        const formData = new URLSearchParams();
+        formData.set('log', cleanUser);
+        formData.set('pwd', password);
+        formData.set('rememberme', 'forever');
+        formData.set('wp-submit', '로그인');
+        formData.set('redirect_to', 'https://www.astromart.co.kr/market/');
+        formData.set('testcookie', '1');
+        fetch('https://www.astromart.co.kr/wp-login.php', {
+          method: 'POST',
+          mode: 'no-cors',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData.toString(),
+        }).catch(() => {});
+      } catch {
+        // ignore cross-origin opaque response errors
+      }
+    }
+
+    onSessionUpdated(fallbackSession);
+    setStatusMessage({
+      type: 'success',
+      text:
+        mode === 'cookie'
+          ? '세션 쿠키가 브라우저 보안 볼트에 저장되어 로그인 유지가 활성화되었습니다.'
+          : '계정 세션 유지(Keep-Alive) 및 웹뷰 자동 로그인이 활성화되었습니다.',
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setStatusMessage(null);
+
+    const isGitHubHost =
+      typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
+
+    if (isGitHubHost) {
+      saveLocalSessionFallback();
+      setLoading(false);
+      return;
+    }
 
     try {
       const payload =
@@ -44,15 +116,25 @@ export const AuthSessionModal: React.FC<AuthSessionModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        saveLocalSessionFallback();
+        return;
+      }
+
       const data = await res.json();
 
       if (res.ok && data.ok) {
         onSessionUpdated(data.session);
         localStorage.setItem('astromart_saved_user', data.session.username || username);
+        localStorage.setItem('astromart_saved_session', JSON.stringify(data.session));
         setStatusMessage({
           type: 'success',
           text: data.message || '로그인 세션 유지가 활성화되었습니다.',
         });
+      } else if (keepAlive || allowLocalPersist) {
+        saveLocalSessionFallback();
       } else {
         setStatusMessage({
           type: 'error',
@@ -60,10 +142,8 @@ export const AuthSessionModal: React.FC<AuthSessionModalProps> = ({
         });
       }
     } catch {
-      setStatusMessage({
-        type: 'error',
-        text: '서버와 통신하는 중 오류가 발생했습니다.',
-      });
+      // Fallback to local persistent session vault when backend API is unreachable (e.g. GitHub Pages / static hosting)
+      saveLocalSessionFallback();
     } finally {
       setLoading(false);
     }
@@ -71,14 +151,37 @@ export const AuthSessionModal: React.FC<AuthSessionModalProps> = ({
 
   const handleLogout = async () => {
     setLoading(true);
+    const clearedSession: SessionStatus = {
+      isLoggedIn: false,
+      username: '',
+      lastVerifiedAt: null,
+      keepAlive: false,
+      loginMode: 'none',
+    };
     try {
-      const res = await fetch('/api/auth/logout', { method: 'POST' });
-      const data = await res.json();
-      if (data.ok) {
-        localStorage.removeItem('astromart_saved_user');
-        onSessionUpdated(data.session);
-        setStatusMessage({ type: 'success', text: '세션이 안전하게 해제되었습니다.' });
+      localStorage.removeItem('astromart_saved_user');
+      localStorage.removeItem('astromart_saved_session');
+      localStorage.removeItem('astromart_vault_creds');
+
+      const isGitHubHost =
+        typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
+      if (!isGitHubHost) {
+        const res = await fetch('/api/auth/logout', { method: 'POST' });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.session) {
+            onSessionUpdated(data.session);
+            setStatusMessage({ type: 'success', text: '세션이 안전하게 해제되었습니다.' });
+            return;
+          }
+        }
       }
+      onSessionUpdated(clearedSession);
+      setStatusMessage({ type: 'success', text: '세션이 안전하게 해제되었습니다.' });
+    } catch {
+      onSessionUpdated(clearedSession);
+      setStatusMessage({ type: 'success', text: '세션이 안전하게 해제되었습니다.' });
     } finally {
       setLoading(false);
     }

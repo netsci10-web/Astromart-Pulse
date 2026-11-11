@@ -164,18 +164,47 @@ const DEFAULT_CLIENT_STATE: ClientLocalState = {
   },
 };
 
+function sanitizePostUrl(uid: string, rawUrl?: string): string {
+  if (uid) {
+    return `${ASTROMART_BASE}/market/?mod=document&uid=${uid}`;
+  }
+  if (!rawUrl || rawUrl.includes('/wp-json/')) {
+    return `${ASTROMART_BASE}/market/`;
+  }
+  return rawUrl;
+}
+
 export function loadClientState(): ClientLocalState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      const rawKnown: MarketPost[] =
+        Array.isArray(parsed.knownPosts) && parsed.knownPosts.length > 0
+          ? parsed.knownPosts
+          : EMBEDDED_FALLBACK_POSTS;
+      const sanitizedKnown = rawKnown.map((p) => ({
+        ...p,
+        url: sanitizePostUrl(p.uid, p.url),
+      }));
+      const sanitizedSim = Array.isArray(parsed.simulatedPosts)
+        ? parsed.simulatedPosts.map((p: MarketPost) => ({
+            ...p,
+            url: sanitizePostUrl(p.uid, p.url),
+          }))
+        : [];
+      const sanitizedNotifs = Array.isArray(parsed.notifications)
+        ? parsed.notifications.map((n: NotificationLogItem) => ({
+            ...n,
+            url: sanitizePostUrl(n.uid, n.url),
+          }))
+        : [];
       return {
         ...DEFAULT_CLIENT_STATE,
         ...parsed,
-        knownPosts:
-          Array.isArray(parsed.knownPosts) && parsed.knownPosts.length > 0
-            ? parsed.knownPosts
-            : EMBEDDED_FALLBACK_POSTS,
+        knownPosts: sanitizedKnown,
+        simulatedPosts: sanitizedSim,
+        notifications: sanitizedNotifs,
       };
     }
   } catch {
@@ -235,6 +264,91 @@ export function fetchAstromartViaJsonp(timeoutMs = 7000): Promise<string> {
   });
 }
 
+/**
+ * Fetches a single KBoard post detail via WordPress JSONP (`uid` + `mod=document`).
+ * Strips any top-window redirect or alert scripts injected by KBoard when unauthenticated.
+ */
+export function fetchPostDetailViaJsonp(
+  uid: string,
+  timeoutMs = 7000
+): Promise<{ requiresLogin: boolean; contentHtml: string }> {
+  return new Promise((resolve, reject) => {
+    const cbName = `__astromart_doc_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    const script = document.createElement('script');
+    const win = window as unknown as Record<string, unknown>;
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('JSONP detail timeout'));
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete win[cbName];
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+    }
+
+    win[cbName] = (data: { content?: { rendered?: string } }) => {
+      cleanup();
+      const rawHtml = data?.content?.rendered || '';
+      const requiresLogin =
+        rawHtml.includes('로그인해 주시기 바랍니다') ||
+        rawHtml.includes('권한이 없습니다') ||
+        rawHtml.includes('top.window.location.href');
+
+      if (requiresLogin) {
+        resolve({ requiresLogin: true, contentHtml: '' });
+        return;
+      }
+
+      // Sanitize scripts and fix relative links/images
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(rawHtml, 'text/html');
+      doc.querySelectorAll('script').forEach((s) => s.remove());
+      doc.querySelectorAll('img').forEach((img) => {
+        const src = img.getAttribute('src');
+        if (src && src.startsWith('/')) {
+          img.setAttribute('src', `${ASTROMART_BASE}${src}`);
+        }
+      });
+      doc.querySelectorAll('a').forEach((a) => {
+        const href = a.getAttribute('href') || '';
+        if (href.includes('/wp-json/')) {
+          const m = href.match(/uid=(\d+)/);
+          a.setAttribute(
+            'href',
+            m ? `${ASTROMART_BASE}/market/?mod=document&uid=${m[1]}` : `${ASTROMART_BASE}/market/`
+          );
+        } else if (href.startsWith('/')) {
+          a.setAttribute('href', `${ASTROMART_BASE}${href}`);
+        }
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      });
+
+      const docEl =
+        doc.querySelector('#kboard-default-document') ||
+        doc.querySelector('.kboard-document') ||
+        doc.body;
+
+      resolve({
+        requiresLogin: false,
+        contentHtml: docEl ? docEl.innerHTML : rawHtml,
+      });
+    };
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('JSONP detail load failed'));
+    };
+
+    script.src = `https://www.astromart.co.kr/wp-json/wp/v2/pages/57?_jsonp=${cbName}&uid=${encodeURIComponent(uid)}&mod=document&_t=${Date.now()}`;
+    document.head.appendChild(script);
+  });
+}
+
 export function parseAstromartHtmlInBrowser(html: string): MarketPost[] {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
@@ -273,9 +387,8 @@ export function parseAstromartHtmlInBrowser(html: string): MarketPost[] {
     const dateText = row.querySelector('td.kboard-list-date')?.textContent?.trim() || '';
     const votes = parseInt(row.querySelector('td.kboard-list-vote')?.textContent?.trim() || '0', 10) || 0;
     const views = parseInt(row.querySelector('td.kboard-list-view')?.textContent?.trim() || '0', 10) || 0;
-    const fullUrl = href.startsWith('http')
-      ? href
-      : `${ASTROMART_BASE}${href.startsWith('/') ? '' : '/market/'}${href}`;
+    // Always construct canonical market document URL from uid (never use /wp-json/ request URI)
+    const fullUrl = `${ASTROMART_BASE}/market/?mod=document&uid=${uid}`;
 
     posts.push({
       uid,
