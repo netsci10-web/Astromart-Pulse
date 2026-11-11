@@ -50,9 +50,21 @@ export default defineConfig(() => {
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          navigateFallbackDenylist: [/^\/api\//],
+          globPatterns: ['**/*.{ico,png,svg,woff,woff2}'],
+          navigateFallback: null,
           runtimeCaching: [
+            {
+              urlPattern: ({ request }) =>
+                request.mode === 'navigate' ||
+                request.destination === 'document' ||
+                request.destination === 'script' ||
+                request.destination === 'style',
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'app-shell-network-first-v4',
+                networkTimeoutSeconds: 4,
+              },
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',
@@ -84,8 +96,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],

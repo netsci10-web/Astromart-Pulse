@@ -96,54 +96,50 @@ export const AuthSessionModal: React.FC<AuthSessionModalProps> = ({
     setLoading(true);
     setStatusMessage(null);
 
+    // 1. Immediately persist and activate session on client vault so it never fails or blocks
+    saveLocalSessionFallback();
+
     const isGitHubHost =
       typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
 
     if (isGitHubHost) {
-      saveLocalSessionFallback();
       setLoading(false);
       return;
     }
 
+    // 2. If running with full-stack backend server, sync session cookies in background with 3s timeout
     try {
       const payload =
         mode === 'cookie'
           ? { username: username || 'Astromart 회원', cookieString, keepAlive }
-          : { username, password, keepAlive, allowLocalPersist };
+          : { username, password, keepAlive, allowLocalPersist: true };
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
 
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        saveLocalSessionFallback();
-        return;
-      }
-
-      const data = await res.json();
-
-      if (res.ok && data.ok) {
-        onSessionUpdated(data.session);
-        localStorage.setItem('astromart_saved_user', data.session.username || username);
-        localStorage.setItem('astromart_saved_session', JSON.stringify(data.session));
-        setStatusMessage({
-          type: 'success',
-          text: data.message || '로그인 세션 유지가 활성화되었습니다.',
-        });
-      } else if (keepAlive || allowLocalPersist) {
-        saveLocalSessionFallback();
-      } else {
-        setStatusMessage({
-          type: 'error',
-          text: data.message || '로그인 연동에 실패했습니다.',
-        });
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok && data.session) {
+          onSessionUpdated(data.session);
+          localStorage.setItem('astromart_saved_user', data.session.username || username);
+          localStorage.setItem('astromart_saved_session', JSON.stringify(data.session));
+          setStatusMessage({
+            type: 'success',
+            text: data.message || '로그인 세션 유지가 활성화되었습니다.',
+          });
+        }
       }
     } catch {
-      // Fallback to local persistent session vault when backend API is unreachable (e.g. GitHub Pages / static hosting)
-      saveLocalSessionFallback();
+      // Already saved and activated via saveLocalSessionFallback()
     } finally {
       setLoading(false);
     }

@@ -43,6 +43,40 @@
         PatchedWebSocket.CLOSING = NativeWebSocket.CLOSING;
         PatchedWebSocket.CLOSED = NativeWebSocket.CLOSED;
         window.WebSocket = PatchedWebSocket;
+
+        // Purge any legacy precached Service Worker bundles (v4 migration)
+        try {
+          var SW_MIGRATION_KEY = 'astromart_sw_migrated_v4';
+          if (localStorage.getItem(SW_MIGRATION_KEY) !== 'true') {
+            localStorage.setItem(SW_MIGRATION_KEY, 'true');
+            if ('serviceWorker' in navigator) {
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                var hadSw = regs && regs.length > 0;
+                Promise.all(
+                  regs.map(function (r) {
+                    return r.unregister();
+                  })
+                ).then(function () {
+                  if ('caches' in window) {
+                    caches.keys().then(function (keys) {
+                      Promise.all(
+                        keys.map(function (k) {
+                          return caches.delete(k);
+                        })
+                      ).then(function () {
+                        if (hadSw) {
+                          window.location.reload();
+                        }
+                      });
+                    });
+                  } else if (hadSw) {
+                    window.location.reload();
+                  }
+                });
+              });
+            }
+          }
+        } catch (e) {}
       })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
