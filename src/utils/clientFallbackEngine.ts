@@ -6,13 +6,8 @@ import {
   MarketStateResponse,
 } from '../types';
 
-const STORAGE_KEY = 'astromart_pulse_static_state_v2';
+const STORAGE_KEY = 'astromart_pulse_static_state_v3';
 const ASTROMART_BASE = 'https://www.astromart.co.kr';
-const MARKET_URL = 'https://www.astromart.co.kr/market/?mod=list';
-const REMOTE_API_BRIDGES = [
-  'https://ais-pre-32kfp37y5qrrs433oogmlf-840164535426.asia-east1.run.app/api/market',
-  'https://ais-dev-32kfp37y5qrrs433oogmlf-840164535426.asia-east1.run.app/api/market',
-];
 
 const EMBEDDED_FALLBACK_POSTS: MarketPost[] = [
   {
@@ -145,6 +140,7 @@ interface ClientLocalState {
   simulatedPosts: MarketPost[];
   notifications: NotificationLogItem[];
   lastCheckedAt: string | null;
+  lastRenderedHtml?: string;
   session: SessionStatus;
 }
 
@@ -196,18 +192,47 @@ export function saveClientState(state: ClientLocalState) {
   }
 }
 
-async function fetchWithTimeout(url: string, timeoutMs = 3500): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      cache: 'no-store',
-    });
-    return res;
-  } finally {
-    clearTimeout(timer);
-  }
+/**
+ * Directly fetches live Astromart Market HTML from WordPress REST API via JSONP (`?_jsonp=`).
+ * Bypasses CORS completely without any third-party proxy!
+ */
+export function fetchAstromartViaJsonp(timeoutMs = 7000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const cbName = `__astromart_jsonp_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    const script = document.createElement('script');
+    const win = window as unknown as Record<string, unknown>;
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('JSONP request timeout'));
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete win[cbName];
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+    }
+
+    win[cbName] = (data: { content?: { rendered?: string } }) => {
+      cleanup();
+      const html = data?.content?.rendered || '';
+      if (html && html.includes('kboard-list')) {
+        resolve(html);
+      } else {
+        reject(new Error('Invalid JSONP payload'));
+      }
+    };
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('JSONP load failed'));
+    };
+
+    script.src = `https://www.astromart.co.kr/wp-json/wp/v2/pages/57?_jsonp=${cbName}&_t=${Date.now()}`;
+    document.head.appendChild(script);
+  });
 }
 
 export function parseAstromartHtmlInBrowser(html: string): MarketPost[] {
@@ -270,66 +295,32 @@ export function parseAstromartHtmlInBrowser(html: string): MarketPost[] {
   return posts;
 }
 
-async function fetchLivePostsMultiSource(): Promise<MarketPost[]> {
-  // 1. Try local build-time snapshot first (./market-snapshot.json on GitHub Pages)
-  let snapshotPosts: MarketPost[] = EMBEDDED_FALLBACK_POSTS;
+async function fetchLivePostsMultiSource(): Promise<{ posts: MarketPost[]; rawHtml?: string }> {
+  // 1. Primary: Direct WordPress JSONP from astromart.co.kr (Zero CORS, 100% live!)
   try {
-    const snapRes = await fetchWithTimeout('./market-snapshot.json', 2000);
+    const jsonpHtml = await fetchAstromartViaJsonp(6500);
+    const parsed = parseAstromartHtmlInBrowser(jsonpHtml);
+    if (parsed.length > 0) {
+      return { posts: parsed, rawHtml: jsonpHtml };
+    }
+  } catch {
+    // Fall through to local snapshot
+  }
+
+  // 2. Fallback: Local build-time snapshot (./market-snapshot.json)
+  try {
+    const snapRes = await fetch('./market-snapshot.json', { cache: 'no-store' });
     if (snapRes.ok) {
       const snapData = await snapRes.json();
       if (Array.isArray(snapData.posts) && snapData.posts.length > 0) {
-        snapshotPosts = snapData.posts;
+        return { posts: snapData.posts };
       }
     }
   } catch {
     // ignore
   }
 
-  // 2. Race live remote bridges & CORS proxies with strict 3.5s timeout so UI never hangs
-  const liveCandidates: Promise<MarketPost[]>[] = [
-    ...REMOTE_API_BRIDGES.map(async (bridgeUrl) => {
-      const r = await fetchWithTimeout(bridgeUrl, 3200);
-      if (!r.ok) throw new Error('Bridge unavailable');
-      const data = await r.json();
-      if (Array.isArray(data.posts) && data.posts.length > 0) {
-        return data.posts.filter((p: MarketPost) => !p.isSimulated);
-      }
-      throw new Error('Empty bridge posts');
-    }),
-    (async () => {
-      const r = await fetchWithTimeout(
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(MARKET_URL)}&_t=${Date.now()}`,
-        3500
-      );
-      if (!r.ok) throw new Error('allorigins failed');
-      const html = await r.text();
-      const parsed = parseAstromartHtmlInBrowser(html);
-      if (parsed.length === 0) throw new Error('allorigins empty');
-      return parsed;
-    })(),
-    (async () => {
-      const r = await fetchWithTimeout(
-        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(MARKET_URL)}`,
-        3500
-      );
-      if (!r.ok) throw new Error('codetabs failed');
-      const html = await r.text();
-      const parsed = parseAstromartHtmlInBrowser(html);
-      if (parsed.length === 0) throw new Error('codetabs empty');
-      return parsed;
-    })(),
-  ];
-
-  try {
-    const livePosts = await Promise.any(liveCandidates);
-    if (livePosts && livePosts.length > 0) {
-      return livePosts;
-    }
-  } catch {
-    // All live proxies timed out or were blocked; use snapshotPosts immediately
-  }
-
-  return snapshotPosts;
+  return { posts: EMBEDDED_FALLBACK_POSTS };
 }
 
 export async function pollClientFallback(): Promise<{
@@ -337,7 +328,10 @@ export async function pollClientFallback(): Promise<{
   newNotifications: NotificationLogItem[];
 }> {
   const state = loadClientState();
-  const fetchedPosts = await fetchLivePostsMultiSource();
+  const { posts: fetchedPosts, rawHtml } = await fetchLivePostsMultiSource();
+  if (rawHtml) {
+    state.lastRenderedHtml = rawHtml;
+  }
 
   const regularLivePosts = fetchedPosts.filter((p) => !p.isNotice);
   const noticeLivePosts = fetchedPosts.filter((p) => p.isNotice);
