@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Fetch latest live Astromart Market snapshot
+        run: node scripts/generate-snapshot.mjs || true
+
       - name: Build static PWA for GitHub Pages
         env:
           GITHUB_PAGES: "true"

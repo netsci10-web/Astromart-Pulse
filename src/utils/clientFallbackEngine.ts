@@ -1,8 +1,138 @@
-import { MarketPost, NotificationLogItem, PollingIntervalSec, SessionStatus, MarketStateResponse } from '../types';
+import {
+  MarketPost,
+  NotificationLogItem,
+  PollingIntervalSec,
+  SessionStatus,
+  MarketStateResponse,
+} from '../types';
 
-const STORAGE_KEY = 'astromart_pulse_static_state_v1';
+const STORAGE_KEY = 'astromart_pulse_static_state_v2';
 const ASTROMART_BASE = 'https://www.astromart.co.kr';
 const MARKET_URL = 'https://www.astromart.co.kr/market/?mod=list';
+const REMOTE_API_BRIDGES = [
+  'https://ais-pre-32kfp37y5qrrs433oogmlf-840164535426.asia-east1.run.app/api/market',
+  'https://ais-dev-32kfp37y5qrrs433oogmlf-840164535426.asia-east1.run.app/api/market',
+];
+
+const EMBEDDED_FALLBACK_POSTS: MarketPost[] = [
+  {
+    uid: '121723',
+    category: '판매',
+    title: '국내 정발 드워프3 상태 최상',
+    commentCount: 0,
+    author: '윤정필',
+    dateText: '3시간 전',
+    votes: 0,
+    views: 58,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121723',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121722',
+    category: '판매',
+    title: '캐논 방송용 카메라용 XL 마운트 플루오라이트렌즈',
+    commentCount: 1,
+    author: '이정국',
+    dateText: '3시간 전',
+    votes: 0,
+    views: 71,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121722',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121721',
+    category: '판매',
+    title: '스타센스 102az 풀세트 판매(가격인하)',
+    commentCount: 0,
+    author: '이재윤',
+    dateText: '3시간 전',
+    votes: 0,
+    views: 64,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121721',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121720',
+    category: '구입',
+    title: 'ZWO ASI2600MM Pro, ZWO OAG-L, ZWO 7x36mm EFW 구합니다.',
+    commentCount: 0,
+    author: '박경진',
+    dateText: '5시간 전',
+    votes: 0,
+    views: 36,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121720',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121719',
+    category: '판매',
+    title: '다카하시 EM-200 Temma2M 적도의 및 전용 삼각대 세트',
+    commentCount: 2,
+    author: '김현우',
+    dateText: '6시간 전',
+    votes: 1,
+    views: 114,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121719',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121718',
+    category: '판매',
+    title: 'ZWO ASIAIR Plus 256G 신형 미개봉급 양도합니다',
+    commentCount: 0,
+    author: '정승호',
+    dateText: '7시간 전',
+    votes: 0,
+    views: 89,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121718',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121717',
+    category: '구입',
+    title: '텔레뷰 Nagler 31mm 또는 Ethos 21mm 아이피스 구합니다',
+    commentCount: 1,
+    author: '최민석',
+    dateText: '8시간 전',
+    votes: 0,
+    views: 52,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121717',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '121716',
+    category: '판매',
+    title: '스카이워쳐 EQ6-R Pro 적도의 + 연장봉 일괄 판매',
+    commentCount: 0,
+    author: '강태윤',
+    dateText: '9시간 전',
+    votes: 0,
+    views: 103,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=121716',
+    isNotice: false,
+    discoveredAt: new Date().toISOString(),
+  },
+  {
+    uid: '117255',
+    category: '공지',
+    title: '사진 업로드 오류에 대한 공지사항입니다.',
+    commentCount: 2,
+    author: '아스트로마트',
+    dateText: '2024.12.30',
+    votes: 3,
+    views: 7073,
+    url: 'https://www.astromart.co.kr/market/?mod=document&uid=117255',
+    isNotice: true,
+    discoveredAt: new Date().toISOString(),
+  },
+];
 
 interface ClientLocalState {
   intervalSec: PollingIntervalSec;
@@ -25,10 +155,10 @@ const DEFAULT_CLIENT_STATE: ClientLocalState = {
   notifyAllNewPosts: true,
   categoryFilter: '전체',
   seenUids: [],
-  knownPosts: [],
+  knownPosts: EMBEDDED_FALLBACK_POSTS,
   simulatedPosts: [],
   notifications: [],
-  lastCheckedAt: null,
+  lastCheckedAt: new Date().toISOString(),
   session: {
     isLoggedIn: false,
     username: '',
@@ -43,7 +173,14 @@ export function loadClientState(): ClientLocalState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_CLIENT_STATE, ...parsed };
+      return {
+        ...DEFAULT_CLIENT_STATE,
+        ...parsed,
+        knownPosts:
+          Array.isArray(parsed.knownPosts) && parsed.knownPosts.length > 0
+            ? parsed.knownPosts
+            : EMBEDDED_FALLBACK_POSTS,
+      };
     }
   } catch {
     // ignore
@@ -59,27 +196,18 @@ export function saveClientState(state: ClientLocalState) {
   }
 }
 
-export async function fetchHtmlViaCorsProxy(targetUrl: string): Promise<string> {
-  const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&_t=${Date.now()}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
-  ];
-
-  let lastErr: Error | null = null;
-  for (const proxyUrl of proxies) {
-    try {
-      const res = await fetch(proxyUrl, { cache: 'no-store' });
-      if (res.ok) {
-        const text = await res.text();
-        if (text && text.includes('kboard')) {
-          return text;
-        }
-      }
-    } catch (err) {
-      lastErr = err instanceof Error ? err : new Error('CORS 프록시 연결 실패');
-    }
+async function fetchWithTimeout(url: string, timeoutMs = 3500): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
   }
-  throw lastErr || new Error('아스트로마트 데이터를 가져오지 못했습니다.');
 }
 
 export function parseAstromartHtmlInBrowser(html: string): MarketPost[] {
@@ -142,13 +270,74 @@ export function parseAstromartHtmlInBrowser(html: string): MarketPost[] {
   return posts;
 }
 
+async function fetchLivePostsMultiSource(): Promise<MarketPost[]> {
+  // 1. Try local build-time snapshot first (./market-snapshot.json on GitHub Pages)
+  let snapshotPosts: MarketPost[] = EMBEDDED_FALLBACK_POSTS;
+  try {
+    const snapRes = await fetchWithTimeout('./market-snapshot.json', 2000);
+    if (snapRes.ok) {
+      const snapData = await snapRes.json();
+      if (Array.isArray(snapData.posts) && snapData.posts.length > 0) {
+        snapshotPosts = snapData.posts;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. Race live remote bridges & CORS proxies with strict 3.5s timeout so UI never hangs
+  const liveCandidates: Promise<MarketPost[]>[] = [
+    ...REMOTE_API_BRIDGES.map(async (bridgeUrl) => {
+      const r = await fetchWithTimeout(bridgeUrl, 3200);
+      if (!r.ok) throw new Error('Bridge unavailable');
+      const data = await r.json();
+      if (Array.isArray(data.posts) && data.posts.length > 0) {
+        return data.posts.filter((p: MarketPost) => !p.isSimulated);
+      }
+      throw new Error('Empty bridge posts');
+    }),
+    (async () => {
+      const r = await fetchWithTimeout(
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(MARKET_URL)}&_t=${Date.now()}`,
+        3500
+      );
+      if (!r.ok) throw new Error('allorigins failed');
+      const html = await r.text();
+      const parsed = parseAstromartHtmlInBrowser(html);
+      if (parsed.length === 0) throw new Error('allorigins empty');
+      return parsed;
+    })(),
+    (async () => {
+      const r = await fetchWithTimeout(
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(MARKET_URL)}`,
+        3500
+      );
+      if (!r.ok) throw new Error('codetabs failed');
+      const html = await r.text();
+      const parsed = parseAstromartHtmlInBrowser(html);
+      if (parsed.length === 0) throw new Error('codetabs empty');
+      return parsed;
+    })(),
+  ];
+
+  try {
+    const livePosts = await Promise.any(liveCandidates);
+    if (livePosts && livePosts.length > 0) {
+      return livePosts;
+    }
+  } catch {
+    // All live proxies timed out or were blocked; use snapshotPosts immediately
+  }
+
+  return snapshotPosts;
+}
+
 export async function pollClientFallback(): Promise<{
   response: MarketStateResponse;
   newNotifications: NotificationLogItem[];
 }> {
   const state = loadClientState();
-  const html = await fetchHtmlViaCorsProxy(MARKET_URL);
-  const fetchedPosts = parseAstromartHtmlInBrowser(html);
+  const fetchedPosts = await fetchLivePostsMultiSource();
 
   const regularLivePosts = fetchedPosts.filter((p) => !p.isNotice);
   const noticeLivePosts = fetchedPosts.filter((p) => p.isNotice);

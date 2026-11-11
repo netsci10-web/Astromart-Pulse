@@ -58,9 +58,17 @@ const INTERVAL_OPTIONS: { value: PollingIntervalSec; label: string }[] = [
 ];
 
 export default function App() {
+  const isGitHubHost =
+    typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
+  const initialClientState = useMemo(() => loadClientState(), []);
+
   const [activeTab, setActiveTab] = useState<'feed' | 'webview' | 'alerts' | 'settings'>('feed');
-  const [posts, setPosts] = useState<MarketPost[]>([]);
-  const [notifications, setNotifications] = useState<NotificationLogItem[]>([]);
+  const [posts, setPosts] = useState<MarketPost[]>(() =>
+    isGitHubHost ? initialClientState.knownPosts : []
+  );
+  const [notifications, setNotifications] = useState<NotificationLogItem[]>(() =>
+    isGitHubHost ? initialClientState.notifications : []
+  );
   const [intervalSec, setIntervalSec] = useState<PollingIntervalSec>(60);
   const [monitoringEnabled, setMonitoringEnabled] = useState<boolean>(true);
   const [keywords, setKeywords] = useState<string[]>(['ZWO', '드워프', '적도의', '다카하시', '쌍안경']);
@@ -70,11 +78,15 @@ export default function App() {
   const [includeNotices, setIncludeNotices] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
-  const [nextCheckAt, setNextCheckAt] = useState<string | null>(null);
+  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(() =>
+    isGitHubHost ? initialClientState.lastCheckedAt : null
+  );
+  const [nextCheckAt, setNextCheckAt] = useState<string | null>(() =>
+    isGitHubHost ? new Date(Date.now() + 60 * 1000).toISOString() : null
+  );
   const [remainingSec, setRemainingSec] = useState<number>(60);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [isLoadingInitial, setIsLoadingInitial] = useState<boolean>(true);
+  const [isLoadingInitial, setIsLoadingInitial] = useState<boolean>(() => !isGitHubHost);
   const [pollError, setPollError] = useState<string | null>(null);
 
   const [session, setSession] = useState<SessionStatus>({
@@ -104,7 +116,7 @@ export default function App() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
   const [isGitHubModalOpen, setIsGitHubModalOpen] = useState<boolean>(false);
-  const [isStaticMode, setIsStaticMode] = useState<boolean>(false);
+  const [isStaticMode, setIsStaticMode] = useState<boolean>(() => isGitHubHost);
   const [liveToast, setLiveToast] = useState<NotificationLogItem | null>(null);
   const [selectedTestUids, setSelectedTestUids] = useState<string[]>([]);
   const [selectedNotifIds, setSelectedNotifIds] = useState<string[]>([]);
@@ -144,6 +156,9 @@ export default function App() {
   const fetchMarketData = useCallback(async (force = false) => {
     if (force) setIsRefreshing(true);
     try {
+      if (isGitHubHost) {
+        throw new Error('STATIC_GITHUB_PAGES');
+      }
       const res = await fetch(`/api/market${force ? '?force=true' : ''}`);
       const contentType = res.headers.get('content-type') || '';
       if (!res.ok || !contentType.includes('application/json')) {
@@ -168,6 +183,7 @@ export default function App() {
       // Fallback to Client-Side Polling Engine (GitHub Pages / Static Hosting)
       try {
         setIsStaticMode(true);
+        setIsLoadingInitial(false);
         const { response: data, newNotifications } = await pollClientFallback();
         setPosts(data.posts || []);
         setNotifications(data.notifications || []);
